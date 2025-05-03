@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dual Tree Layout</title>
+  <!-- Copyright 1998-2021 by Northwoods Software Corporation. -->
+  <script src="https://unpkg.com/gojs"></script>
+  <script id="code">
+
+// decide whether a Node is an "assistant" node or a regular one
+function isAssistant(n) { return n && n.data && !!n.data.assistant; }
+
+// this custom TreeLayout was adapted from the Org Chart Assistants sample
+function DualTreeLayout() {
+  go.TreeLayout.call(this);
+}
+go.Diagram.inherit(DualTreeLayout, go.TreeLayout);
+
+DualTreeLayout.prototype.makeNetwork = function(coll) {
+  var net = go.TreeLayout.prototype.makeNetwork.call(this, coll);
+  // copy the collection of TreeVertexes, because we will modify the network
+  var vertexcoll = new go.Set(/*go.TreeVertex*/);
+  vertexcoll.addAll(net.vertexes);
+  for (var it = vertexcoll.iterator; it.next();) {
+    var parent = it.value;
+    // count the number of assistants
+    var acount = 0;
+    var ait = parent.destinationVertexes;
+    while (ait.next()) {
+      if (isAssistant(ait.value.node)) acount++;
+    }
+    // if a vertex has some number of children that should be assistants
+    if (acount > 0) {
+      parent._hasDualChildren = true;
+      // remember the assistant edges and the regular child edges
+      var asstedges = new go.Set(/*go.TreeEdge*/);
+      var childedges = new go.Set(/*go.TreeEdge*/);
+      var eit = parent.destinationEdges;
+      while (eit.next()) {
+        var e = eit.value;
+        if (isAssistant(e.toVertex.node)) {
+          asstedges.add(e);
+        } else {
+          childedges.add(e);
+        }
+      }
+      // first remove all edges from PARENT
+      eit = asstedges.iterator;
+      while (eit.next()) { parent.deleteDestinationEdge(eit.value); }
+      eit = childedges.iterator;
+      while (eit.next()) { parent.deleteDestinationEdge(eit.value); }
+
+      // create substitute vertex to be new parent of all regular children
+      var subst = net.createVertex();
+      subst._forRegulars = true;
+      net.addVertex(subst);
+      // reparent regular children to the new substitute vertex
+      eit = childedges.iterator;
+      while (eit.next()) {
+        eit.value.fromVertex = subst;
+        subst.addDestinationEdge(eit.value);
+      }
+      net.linkVertexes(parent, subst, null);
+
+      // create substitute vertex to be new parent of all assistant children
+      var subst2 = net.createVertex();
+      subst2._forAssistants = true;
+      net.addVertex(subst2);
+      // reparent all assistant children to the new substitute vertex
+      eit = asstedges.iterator;
+      while (eit.next()) {
+        eit.value.fromVertex = subst2;
+        subst2.addDestinationEdge(eit.value);
+      }
+      net.linkVertexes(parent, subst2, null);
+    }
+  }
+  return net;
+};
+
+DualTreeLayout.prototype.assignTreeVertexValues = function(v) {
+  if (v._hasDualChildren) {
+    v.nodeIndent = 0;
+    v.layerSpacing = 0;
+    v.layerSpacingParentOverlap = 1;
+    v.breadthLimit = 0;
+  } else if (v._forAssistants) {
+    // this is the substitute parent for the assistant(s)
+    v.width = v.parent.width;
+    v.height = v.parent.height;
+    v.breadthLimit = 0;
+  } else if (v._forRegulars) {
+    // found the substitute parent for non-assistant children
+    v.width = v.parent.width;
+    v.height = v.parent.height;
+    v.breadthLimit = 180;
+  } else {
+    v.breadthLimit = 180;
+  }
+};  // end of DualTreeLayout
+
+
+  function init() {
+    var $ = go.GraphObject.make;
+
+    myDiagram =
+      $(go.Diagram, "myDiagramDiv",
+        {
+          layout:
+            $(DualTreeLayout,
+              {
+                angle: 90, isRouting: true,
+                setsPortSpot: false, setsChildPortSpot: false,
+                alignment: go.TreeLayout.AlignmentStart
+              }),
+          "undoManager.isEnabled": true
+        });
+
+    myDiagram.nodeTemplate =
+      $(go.Node, "Auto",
+        { width: 100, height: 60 },
+        $(go.Shape, "RoundedRectangle", { fill: "white", portId: "" },
+          new go.Binding("fill", "color")),
+        $(go.TextBlock, { textAlign: "center" },
+          new go.Binding("text")),
+        $("TreeExpanderButton", { alignment: go.Spot.Bottom }),
+        $("Button", $(go.TextBlock, "S"),
+          { alignment: new go.Spot(0.5, 1, -20, 0) },
+          { click: (e, button) => { e.diagram.model.commit(m => m.addNodeData({ text: "S", parent: button.part.key })) } }),
+        $("Button", $(go.TextBlock, "P"),
+          { alignment: new go.Spot(0.5, 1, 20, 0) },
+          { click: (e, button) => { e.diagram.model.commit(m => m.addNodeData({ text: "P", parent: button.part.key, assistant: true })) } }),
+      );
+
+    myDiagram.linkTemplate =
+      $(go.Link,
+        {
+          layerName: "Background", routing: go.Link.Orthogonal, corner: 10,
+          toSpot: new go.Spot(0.001, 0, 20, 0)
+        },
+        new go.Binding("fromSpot", "toNode", function(n) {
+          return (n && n.data.assistant) ? new go.Spot(0.5, 1, 20, 0) : new go.Spot(0.5, 1, -20, 0);
+        }).ofObject(),
+        $(go.Shape),
+        $(go.Shape, { toArrow: "Standard" })
+      );
+
+    myDiagram.model = new go.TreeModel(
+    [
+      { key: 1, text: "Root" },
+      { key: 2, text: "Child 1 serial", parent: 1 },
+      { key: 3, text: "Child 2 parallel", parent: 1, assistant: true },
+      { key: 4, text: "Child 3 serial", parent: 1 },
+      { key: 5, text: "Grand 1 1 parallel", parent: 2, assistant: true },
+      { key: 6, text: "Grand 1 2 parallel", parent: 2, assistant: true },
+      { key: 7, text: "Grand 2 1 serial", parent: 3 },
+      { key: 8, text: "Grand 2 2 serial", parent: 3 }
+    ]);
+  }
+  </script>
+</head>
+<body onload="init()">
+  <div id="myDiagramDiv" style="border: solid 1px black; width:100%; height:600px"></div>
+</body>
+</html>
